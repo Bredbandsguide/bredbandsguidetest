@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="sv">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bredbandsguiden – Prototyp (stabil + sparfunktion)</title>
+
+    <!-- Tailwind CSS (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- React 17 + ReactDOM 17 (UMD) -->
+    <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+
+    <!-- Babel (JSX) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+      /* En synlig felruta om något kraschar */
+      #fatal-error {
+        display:none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,.65);
+        color: #fff;
+        z-index: 9999;
+        padding: 24px;
+      }
+      #fatal-box {
+        max-width: 860px;
+        margin: 40px auto;
+        background: #111;
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: 0 10px 40px rgba(0,0,0,.3);
+      }
+      #fatal-box pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-50 min-h-screen">
+    <div id="fatal-error">
+      <div id="fatal-box">
+        <h2 class="text-xl font-bold mb-2">Oj! Något gick snett.</h2>
+        <p class="mb-2">Prototypen kunde inte starta korrekt. Här är felet:</p>
+        <pre id="fatal-msg" class="text-sm bg-black/60 p-3 rounded"></pre>
+        <p class="mt-3 text-sm opacity-80">Tips: Testa att öppna filen i en annan webbläsare (Chrome/Edge/Firefox), eller se till att du är online första gången så att skriptbiblioteken kan hämtas.</p>
+      </div>
+    </div>
+
+    <div id="root" class="p-4"></div>
+
+    <script>
+      // Visa felruta även om React/Babel krånglar
+      (function(){
+        function showFatal(err){
+          var box = document.getElementById('fatal-error');
+          var msg = document.getElementById('fatal-msg');
+          if(box && msg){
+            box.style.display = 'block';
+            msg.textContent = (err && (err.message || err.stack)) ? (err.message + '\\n\\n' + (err.stack || '')) : String(err || 'Okänt fel');
+          } else {
+            alert('Fel: ' + (err && err.message ? err.message : String(err)));
+          }
+        }
+        window.addEventListener('error', function(e){ showFatal(e.error || e.message || e); });
+        window.addEventListener('unhandledrejection', function(e){ showFatal(e.reason || e); });
+        window._showFatal = showFatal;
+      })();
+    </script>
+
+    <script type="text/babel">
+      const { useState, useMemo, useEffect, useRef } = React;
+
+      // ======= Liten IndexedDB-hjälpare (för stora data-URL:er) =======
+      const DB_NAME = 'bbg_db';
+      const STORE = 'settings';
+      const DB_VERSION = 1;
+
+      function idbOpen(){
+        return new Promise((resolve, reject)=>{
+          const req = indexedDB.open(DB_NAME, DB_VERSION);
+          req.onupgradeneeded = () => {
+            const db = req.result;
+            if(!db.objectStoreNames.contains(STORE)){
+              db.createObjectStore(STORE);
+            }
+          };
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      }
+      function idbGet(key){
+        return idbOpen().then(db =>
+          new Promise((resolve,reject)=>{
+            const tx = db.transaction(STORE, 'readonly');
+            const st = tx.objectStore(STORE);
+            const r = st.get(key);
+            r.onsuccess = () => resolve(r.result);
+            r.onerror = () => reject(r.error);
+          })
+        );
+      }
+      function idbSet(key, val){
+        return idbOpen().then(db =>
+          new Promise((resolve,reject)=>{
+            const tx = db.transaction(STORE, 'readwrite');
+            const st = tx.objectStore(STORE);
+            const r = st.put(val, key);
+            r.onsuccess = () => resolve(true);
+            r.onerror = () => reject(r.error);
+          })
+        );
+      }
+
+      // ======= Inbyggda ikoner (fallback) =======
+      const Icon = ({ name, size=56, strokeWidth=1.8 }) => {
+        const common = {
+          viewBox: "0 0 24 24",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth,
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+          style: { width: size, height: size },
+        };
+        switch (name) {
+          case "person1":
+            return (
+              <svg {...common}>
+                <circle cx="12" cy="7" r="3.2" />
+                <path d="M4.5 19a7.5 7.5 0 0115 0" />
+              </svg>
+            );
+          case "film":
+            return (
+              <svg {...common}>
+                <rect x="3" y="6" width="18" height="12" rx="2" />
+                <path d="M7 6v12M17 6v12" />
+                <circle cx="7" cy="9" r="1" /><circle cx="7" cy="15" r="1" />
+                <circle cx="17" cy="9" r="1" /><circle cx="17" cy="15" r="1" />
+              </svg>
+            );
+          case "video":
+            return (
+              <svg {...common}>
+                <rect x="3" y="7" width="12" height="10" rx="2" />
+                <path d="M15 10l6-3v10l-6-3z" />
+              </svg>
+            );
+          case "gaming":
+            return (
+              <svg {...common}>
+                <rect x="2" y="9" width="20" height="8" rx="4" />
+                <path d="M7 13h-2M6 12v2M17.5 13h.01M15.5 11h.01M15.5 15h.01" />
+              </svg>
+            );
+          case "music":
+            return (
+              <svg {...common}>
+                <path d="M9 18a3 3 0 100-6 3 3 0 000 6zM15 16V6l6-2v10" />
+              </svg>
+            );
+          case "browse":
+            return (
+              <svg {...common}>
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18" />
+              </svg>
+            );
+          case "work":
+            return (
+              <svg {...common}>
+                <rect x="3" y="8" width="18" height="12" rx="2" />
+                <path d="M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2" />
+              </svg>
+            );
+          case "downloads":
+            return (
+              <svg {...common}>
+                <path d="M12 3v10" />
+                <path d="M8 9l4 4 4-4" />
+                <rect x="4" y="17" width="16" height="4" rx="1" />
+              </svg>
+            );
+          case "smarthome":
+            return (
+              <svg {...common}>
+                <path d="M3 11l9-7 9 7" />
+                <path d="M5 10v10h14V10" />
+                <circle cx="12" cy="14" r="2" />
+              </svg>
+            );
+          default:
+            return <div style={{ width: size, height: size }} />;
+        }
+      };
+
+      const Toggle = ({ checked, onChange, label }) => (
+        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" checked={checked} onChange={e=>onChange(e.target.checked)} className="sr-only"/>
+          <span className={`w-10 h-6 rounded-full p-1 transition-colors ${checked? 'bg-blue-600':'bg-gray-300'}`}>
+            <span className={`block w-4 h-4 bg-white rounded-full transition-transform ${checked? 'translate-x-4':'translate-x-0'}`}></span>
+          </span>
+          <span>{label}</span>
+        </label>
+      );
+
+      function ImagePicker({ value, onChange, label="Bild", accept="image/*" }){
+        const handleFile = (file) => {
+          if(!file) return;
+          const reader = new FileReader();
+          reader.onload = e => onChange(e.target.result); // data-URL
+          reader.readAsDataURL(file);
+        };
+        return (
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-medium">{label}</div>
+            {value && (
+              <div className="flex items-center gap-3">
+                <img src={value} alt="förhandsvisning" className="w-14 h-14 object-contain bg-white border rounded" />
+                <button type="button" className="text-sm underline" onClick={()=>onChange("")}>Ta bort</button>
+              </div>
+            )}
+            <input type="url" placeholder="https://exempel.se/bild.png (valfritt)"
+                   value={typeof value === 'string' && value.startsWith('http')? value: ''}
+                   onChange={e=>onChange(e.target.value)}
+                   className="w-full px-3 py-2 border rounded" />
+            <div className="text-xs text-gray-500">Eller ladda upp en fil:</div>
+            <input type="file" accept={accept} onChange={e=>handleFile(e.target.files?.[0])} />
+          </div>
+        );
+      }
+
+      // ======= Logik =======
+      function scoreToSpeed(score) {
+        if (score <= 3) return { tier: "10–30 Mbit/s", detail: "Räcker för enkel surf." };
+        if (score <= 6) return { tier: "50 Mbit/s", detail: "Bra för surf och videosamtal." };
+        if (score <= 9) return { tier: "100 Mbit/s", detail: "Streama HD, videosamtal och spel." };
+        return { tier: "250+ Mbit/s", detail: "Flera samtidigt, spel och 4K." };
+      }
+
+      const DEFAULT_CONFIG = {
+        title: "Bredbandsguiden",
+        titleImage: "",
+        headings: {
+          step1: "Hur många använder internet hemma?",
+          step2: "Vad använder du/ni internet till?",
+          step3: "Förslag på bredband",
+        },
+        headingImages: { step1: "", step2: "", step3: "" },
+        sizes: {
+          baseFontPx: 16, titlePx: 32, headingPx: 22, peopleImgPx: 72, activityImgPx: 56, iconStroke: 1.8
+        },
+        peopleCards: [
+          { id: 1, label: "1", image: "" },
+          { id: 2, label: "2", image: "" },
+          { id: 3, label: "3", image: "" },
+          { id: 4, label: "4 eller fler", image: "" },
+        ],
+        activities: [
+          { id: "stream", label: "Titta på film/serier", score: 5, image: "", fallbackIcon: "film" },
+          { id: "video", label: "Videosamtal", score: 3, image: "", fallbackIcon: "video" },
+          { id: "gaming", label: "Spel online", score: 3, image: "", fallbackIcon: "gaming" },
+          { id: "music", label: "Musik/Poddar", score: 1, image: "", fallbackIcon: "music" },
+          { id: "browse", label: "Surfa & sociala medier", score: 1, image: "", fallbackIcon: "browse" },
+          { id: "work", label: "Skola/Jobb (moln)", score: 3, image: "", fallbackIcon: "work" },
+          { id: "downloads", label: "Stora nedladdningar", score: 5, image: "", fallbackIcon: "downloads" },
+          { id: "smarthome", label: "Smart-hem", score: 1, image: "", fallbackIcon: "smarthome" },
+        ],
+      };
+
+      function usePersistentConfig(){
+        const [config, setConfig] = useState(DEFAULT_CONFIG);
+        const [loaded, setLoaded] = useState(false);
+        const [saveStatus, setSaveStatus] = useState('');
+
+        // Ladda först från IndexedDB, annars localStorage
+        useEffect(()=>{
+          (async () => {
+            try {
+              const fromIDB = await idbGet('bbg_config');
+              if(fromIDB){ setConfig(fromIDB); setLoaded(true); return; }
+            } catch(e) {
+              console.warn('IDB load misslyckades:', e);
+            }
+            try{
+              const raw = localStorage.getItem('bbg_config');
+              if(raw){ setConfig(JSON.parse(raw)); }
+            }catch(e){ console.warn('localStorage parse fel:', e); }
+            setLoaded(true);
+          })().catch(err => window._showFatal && window._showFatal(err));
+        },[]);
+
+        // Debouncer för att inte spara för ofta
+        const saveTimer = useRef(null);
+        const scheduleSave = (next) => {
+          if(saveTimer.current) clearTimeout(saveTimer.current);
+          saveTimer.current = setTimeout(async ()=>{
+            try {
+              await idbSet('bbg_config', next);
+              try { localStorage.setItem('bbg_config', JSON.stringify(next)); } catch {}
+              setSaveStatus('Sparat ' + new Date().toLocaleTimeString());
+            } catch(e) {
+              console.error('Spara misslyckades:', e);
+              setSaveStatus('Kunde inte spara');
+            }
+          }, 300); // spara efter 300ms inaktivitet
+        };
+
+        const wrappedSetConfig = (updater) => {
+          setConfig(prev => {
+            const next = typeof updater === 'function' ? updater(prev) : updater;
+            scheduleSave(next);
+            return next;
+          });
+        };
+
+        return [config, wrappedSetConfig, loaded, saveStatus];
+      }
+
+      const ToggleBtn = (props) => <button {...props} className={"px-3 py-2 border rounded " + (props.className||"")} />;
+
+      function NumberField({ label, value, onChange, min=8, max=160, step=1, suffix="px" }){
+        return (
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium">{label} <span className="text-gray-500">({value}{suffix})</span></label>
+            <input type="range" min={min} max={max} step={step} value={value} onChange={e=>onChange(Number(e.target.value))} />
+            <div className="flex gap-2">
+              <input type="number" className="w-24 px-2 py-1 border rounded" value={value} min={min} max={max} step={step} onChange={e=>onChange(Number(e.target.value))} />
+              <span className="self-center text-sm text-gray-500">{suffix}</span>
+            </div>
+          </div>
+        );
+      }
+
+      function EditorPanel({ config, setConfig, onImport, onExport, saveStatus }){
+        const update = (path, value) => {
+          setConfig(prev => {
+            const next = JSON.parse(JSON.stringify(prev));
+            const parts = path.split('.');
+            let obj = next;
+            while(parts.length>1){ obj = obj[parts.shift()]; }
+            obj[parts[0]] = value;
+            return next;
+          });
+        };
+        return (
+          <div className="mb-6 p-4 border rounded-lg bg-white grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="col-span-1 md:col-span-2 flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Redigeringsläge</h3>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">{saveStatus || "–"}</span>
+                <ToggleBtn onClick={onExport}>Exportera</ToggleBtn>
+                <label className="px-3 py-2 border rounded cursor-pointer">
+                  Importera
+                  <input type="file" accept="application/json" className="hidden" onChange={e=>e.target.files[0] && onImport(e.target.files[0])} />
+                </label>
+                <ToggleBtn onClick={()=>setConfig(DEFAULT_CONFIG)}>Återställ</ToggleBtn>
+              </div>
+            </div>
+
+            {/* Titel + logotyp */}
+            <div className="flex flex-col gap-3">
+              <label className="text-sm font-medium">Huvudrubrik</label>
+              <input value={config.title} onChange={e=>update('title', e.target.value)} className="px-3 py-2 border rounded"/>
+              <ImagePicker value={config.titleImage} onChange={v=>update('titleImage', v)} label="Bild vid rubrik (valfri)" />
+            </div>
+
+            {/* Rubriker + rubrikbilder */}
+            <div className="flex flex-col gap-3">
+              <label className="text-sm font-semibold">Rubriker</label>
+              <input value={config.headings.step1} onChange={e=>update('headings.step1', e.target.value)} className="px-3 py-2 border rounded"/>
+              <ImagePicker value={config.headingImages.step1} onChange={v=>update('headingImages.step1', v)} label="Bild för Steg 1 (valfri)" />
+              <input value={config.headings.step2} onChange={e=>update('headings.step2', e.target.value)} className="px-3 py-2 border rounded"/>
+              <ImagePicker value={config.headingImages.step2} onChange={v=>update('headingImages.step2', v)} label="Bild för Steg 2 (valfri)" />
+              <input value={config.headings.step3} onChange={e=>update('headings.step3', e.target.value)} className="px-3 py-2 border rounded"/>
+              <ImagePicker value={config.headingImages.step3} onChange={v=>update('headingImages.step3', v)} label="Bild för Steg 3 (valfri)" />
+            </div>
+
+            {/* Storlekar */}
+            <div className="md:col-span-2">
+              <h4 className="font-semibold mb-2">Storlek på text och bilder</h4>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <NumberField label="Allmän textstorlek" value={config.sizes.baseFontPx} min={12} max={28} onChange={v=>update('sizes.baseFontPx', v)} />
+                <NumberField label="Rubrikstorlek (H1)" value={config.sizes.titlePx} min={20} max={64} onChange={v=>update('sizes.titlePx', v)} />
+                <NumberField label="Mellanstor rubrik (H2)" value={config.sizes.headingPx} min={16} max={48} onChange={v=>update('sizes.headingPx', v)} />
+                <NumberField label="Bildstorlek – Steg 1" value={config.sizes.peopleImgPx} min={40} max={160} onChange={v=>update('sizes.peopleImgPx', v)} />
+                <NumberField label="Bildstorlek – Steg 2" value={config.sizes.activityImgPx} min={32} max={160} onChange={v=>update('sizes.activityImgPx', v)} />
+                <NumberField label="Ikonens linjetjocklek" value={config.sizes.iconStroke} min={1} max={4} step={0.1} suffix="" onChange={v=>update('sizes.iconStroke', v)} />
+              </div>
+              <p className="text-xs text-gray-500 mt-2">Tips: Är du offline första gången kan biblioteken saknas. Var online när du öppnar filen första gången så cachas de i webbläsaren.</p>
+            </div>
+
+            {/* Personkort */}
+            <div className="md:col-span-2">
+              <h4 className="font-semibold mb-2">Kort: Antal personer</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {config.peopleCards.map((p, idx)=> (
+                  <div key={p.id} className="p-3 border rounded bg-gray-50 flex flex-col gap-2">
+                    <label className="text-sm">Etikett</label>
+                    <input value={p.label} onChange={e=>{
+                      const arr=[...config.peopleCards]; arr[idx]={...p, label:e.target.value}; setConfig({...config, peopleCards:arr});
+                    }} className="px-3 py-2 border rounded"/>
+                    <ImagePicker value={p.image} onChange={v=>{ const arr=[...config.peopleCards]; arr[idx]={...p, image:v}; setConfig({...config, peopleCards:arr}); }} label="Bild (valfri)" />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Aktiviteter */}
+            <div className="md:col-span-2">
+              <h4 className="font-semibold mb-2">Aktiviteter</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {config.activities.map((a, idx)=> (
+                  <div key={a.id} className="p-3 border rounded bg-gray-50 flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium">{a.id}</span>
+                      <span className="text-xs text-gray-500">Poäng</span>
+                    </div>
+                    <input value={a.label} onChange={e=>{
+                      const arr=[...config.activities]; arr[idx]={...a, label:e.target.value}; setConfig({...config, activities:arr});
+                    }} className="px-3 py-2 border rounded"/>
+                    <div className="flex items-center gap-2">
+                      <input type="number" min="0" max="10" value={a.score} onChange={e=>{ const arr=[...config.activities]; arr[idx]={...a, score:Number(e.target.value)}; setConfig({...config, activities:arr}); }} className="w-24 px-3 py-2 border rounded"/>
+                      <span className="text-xs text-gray-500">(påverkar rekommendation)</span>
+                    </div>
+                    <ImagePicker value={a.image} onChange={v=>{ const arr=[...config.activities]; arr[idx]={...a, image:v}; setConfig({...config, activities:arr}); }} label="Ikon/Bild (valfri)" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function BredbandsGuiden() {
+        const [config, setConfig, loaded, saveStatus] = usePersistentConfig();
+        const [step, setStep] = useState(1);
+        const [people, setPeople] = useState(null);
+        const [selected, setSelected] = useState({});
+        const [editMode, setEditMode] = useState(false);
+
+        const activitiesChosen = useMemo(() => config.activities.filter(a => selected[a.id]), [selected, config.activities]);
+        const totalScore = useMemo(() => (people || 0) + activitiesChosen.reduce((s,a)=>s+a.score,0), [people, activitiesChosen]);
+        const rec = useMemo(() => scoreToSpeed(totalScore), [totalScore]);
+
+        const exportConfig = () => {
+          const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'bredbandsguiden-config.json'; a.click();
+          URL.revokeObjectURL(url);
+        };
+        const importConfig = (file) => {
+          const reader = new FileReader();
+          reader.onload = e => {
+            try { setConfig(JSON.parse(e.target.result)); } catch { alert('Ogiltig JSON'); }
+          };
+          reader.readAsText(file);
+        };
+
+        const s = config.sizes || DEFAULT_CONFIG.sizes;
+
+        if(!loaded){
+          return <div className="max-w-4xl mx-auto p-4 text-gray-600">Laddar dina sparade inställningar…</div>;
+        }
+
+        return (
+          <div className="max-w-4xl mx-auto p-4" style={{ fontSize: s.baseFontPx }}>
+            {/* Header */}
+            <div className="flex items-center justify-between gap-4 mb-4">
+              <div className="flex items-center gap-3">
+                {config.titleImage && (
+                  <img src={config.titleImage} alt="Titelbild" style={{ width: s.headingPx, height: s.headingPx, objectFit: 'contain' }}/>
+                )}
+                <h1 className="font-bold" style={{ fontSize: s.titlePx }}>{config.title}</h1>
+              </div>
+              <div className="flex items-center gap-3">
+                <Toggle checked={editMode} onChange={setEditMode} label="Redigeringsläge" />
+                <button onClick={()=>window.print()} className="px-3 py-2 border rounded">Skriv ut</button>
+              </div>
+            </div>
+
+            {editMode && (
+              <EditorPanel
+                config={config}
+                setConfig={setConfig}
+                onImport={importConfig}
+                onExport={exportConfig}
+                saveStatus={saveStatus}
+              />
+            )}
+
+            {/* STEG 1 */}
+            {step===1 && (
+              <section className="mt-2">
+                <div className="flex items-center gap-3 mb-2">
+                  {config.headingImages.step1 && <img src={config.headingImages.step1} alt="" style={{ width: s.headingPx, height: s.headingPx, objectFit: 'contain' }}/>}
+                  <h2 className="font-semibold" style={{ fontSize: s.headingPx }}>{config.headings.step1}</h2>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  {config.peopleCards.map(p=> (
+                    <button key={p.id} onClick={()=>setPeople(p.id)}
+                      className={`p-6 rounded-2xl border-2 font-bold flex flex-col items-center gap-2 ${people===p.id?'border-blue-600':'border-gray-300'}`}>
+                      {p.image ? (
+                        <img src={p.image} alt={p.label} style={{ width: s.peopleImgPx, height: s.peopleImgPx, objectFit: 'contain' }} />
+                      ) : (
+                        <Icon name={p.id===1? 'person1': 'browse'} size={s.peopleImgPx} strokeWidth={s.iconStroke} />
+                      )}
+                      <span style={{ fontSize: Math.max(16, Math.round(s.baseFontPx*1.1)) }}>{p.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <button disabled={!people} onClick={()=>setStep(2)}
+                    className={`px-4 py-2 rounded-xl text-white ${people? 'bg-blue-600':'bg-gray-400 cursor-not-allowed'}`}>Nästa</button>
+                </div>
+              </section>
+            )}
+
+            {/* STEG 2 */}
+            {step===2 && (
+              <section>
+                <div className="flex items-center gap-3 mb-2">
+                  {config.headingImages.step2 && <img src={config.headingImages.step2} alt="" style={{ width: s.headingPx, height: s.headingPx, objectFit: 'contain' }}/>}
+                  <h2 className="font-semibold" style={{ fontSize: s.headingPx }}>{config.headings.step2}</h2>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  {config.activities.map(a=> (
+                    <button key={a.id} onClick={()=> setSelected(p=>({...p,[a.id]:!p[a.id]}))}
+                      className={`p-4 rounded-2xl border-2 text-left flex items-center gap-3 ${selected[a.id]?'border-blue-600 bg-blue-50':'border-gray-300'}`}>
+                      {a.image ? (
+                        <img src={a.image} alt={a.label} style={{ width: s.activityImgPx, height: s.activityImgPx, objectFit: 'contain' }} />
+                      ) : (
+                        <Icon name={a.fallbackIcon} size={s.activityImgPx} strokeWidth={s.iconStroke} />
+                      )}
+                      <span>{a.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-4 flex justify-between">
+                  <button onClick={()=>setStep(1)} className="px-4 py-2 rounded-xl border">Tillbaka</button>
+                  <button onClick={()=>setStep(3)} className="px-4 py-2 rounded-xl bg-blue-600 text-white">Visa förslag</button>
+                </div>
+              </section>
+            )}
+
+            {/* STEG 3 */}
+            {step===3 && (
+              <section>
+                <div className="flex items-center gap-3 mb-2">
+                  {config.headingImages.step3 && <img src={config.headingImages.step3} alt="" style={{ width: s.headingPx, height: s.headingPx, objectFit: 'contain' }}/>}
+                  <h2 className="font-semibold" style={{ fontSize: s.headingPx }}>{config.headings.step3}</h2>
+                </div>
+                <div className="p-4 border-2 border-blue-600 rounded-xl bg-blue-50">
+                  <p className="text-lg">Rekommenderad hastighet:</p>
+                  <p className="font-bold" style={{ fontSize: Math.round(s.baseFontPx*1.5) }}>{rec.tier}</p>
+                  <p>{rec.detail}</p>
+                </div>
+                <div className="mt-4">
+                  <p><strong>Antal personer:</strong> {(() => {
+                    const c = config.peopleCards.find(x=>x.id===people);
+                    return c? c.label : people;
+                  })()}</p>
+                  <p><strong>Valda aktiviteter:</strong> {activitiesChosen.length>0?activitiesChosen.map(a=>a.label).join(", "):"Inga speciella"}</p>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button onClick={()=>setStep(2)} className="px-4 py-2 rounded-xl border">Ändra val</button>
+                  <button onClick={()=>{setPeople(null);setSelected({});setStep(1)}} className="px-4 py-2 rounded-xl border">Börja om</button>
+                  <button onClick={()=>window.print()} className="px-4 py-2 rounded-xl border">Skriv ut</button>
+                </div>
+              </section>
+            )}
+          </div>
+        );
+      }
+
+      // Starta appen säkert
+      try {
+        ReactDOM.render(<BredbandsGuiden />, document.getElementById('root'));
+      } catch(err) {
+        window._showFatal && window._showFatal(err);
+      }
+    </script>
+  </body>
+</html>
